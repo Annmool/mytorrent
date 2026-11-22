@@ -124,7 +124,31 @@ try {
     if ($LASTEXITCODE) { throw 'Cannot inspect fixture torrent' }
     $hashLine = $inspection | Where-Object { $_ -match '^Info hash: [0-9a-f]{40}$' }
     if (!$hashLine) { throw 'Missing info hash' }
-    $fixture = Start-Job -FilePath (Join-Path $PSScriptRoot 'fixture-peer.ps1') -ArgumentList $root, $hashLine.Substring(11)
+    $pipelineFile = Join-Path $root 'pipeline.bin'
+    $pipelineTorrent = Join-Path $root 'pipeline.torrent'
+    $pipelinePayload = [byte[]]::new(8 * 16384 + 29)
+    [Random]::new(27).NextBytes($pipelinePayload)
+    [IO.File]::WriteAllBytes($pipelineFile, $pipelinePayload)
+    Run @('create', $pipelineFile, '--tracker', $url, '--out', $pipelineTorrent)
+    $pipelineInspection = & $Exe inspect $pipelineTorrent
+    if ($LASTEXITCODE) { throw 'Cannot inspect pipeline torrent' }
+    $pipelineHashLine = $pipelineInspection | Where-Object { $_ -match '^Info hash: [0-9a-f]{40}$' }
+    if (!$pipelineHashLine) { throw 'Missing pipeline info hash' }
+    $resumeFile = Join-Path $root 'resume.bin'
+    $resumeTorrent = Join-Path $root 'resume.torrent'
+    $resumePayload = [byte[]]::new(16384 + 73)
+    [Random]::new(51).NextBytes($resumePayload)
+    [IO.File]::WriteAllBytes($resumeFile, $resumePayload)
+    Run @('create', $resumeFile, '--tracker', $url, '--out', $resumeTorrent, '--piece-size', '16384')
+    $resumeInspection = & $Exe inspect $resumeTorrent
+    if ($LASTEXITCODE) { throw 'Cannot inspect resume torrent' }
+    $resumeHashLine = $resumeInspection | Where-Object { $_ -match '^Info hash: [0-9a-f]{40}$' }
+    if (!$resumeHashLine) { throw 'Missing resume info hash' }
+    $resumeHash = $resumeHashLine.Substring(11)
+    $fixture = Start-Job -FilePath (Join-Path $PSScriptRoot 'fixture-peer.ps1') -ArgumentList @(
+        $root, $hashLine.Substring(11), $pipelineHashLine.Substring(11), $pipelineFile, $resumeHash, $resumeFile,
+        (Join-Path $PSScriptRoot 'peer-wire.ps1')
+    )
     $fixturePort = Join-Path $root 'fixture.port'
     Wait-File $fixturePort
     $fixturePeer = '127.0.0.1:' + [IO.File]::ReadAllText($fixturePort)
@@ -138,6 +162,52 @@ try {
             if (Get-ChildItem -Force $out) { throw "$mode left output behind" }
         }
     }
+    $pipelined = Join-Path $root 'pipelined'
+    Run @('download', $pipelineTorrent, '--out', $pipelined, '--peer', $fixturePeer)
+    Assert-Hash (Join-Path $pipelined 'pipeline.bin') (Get-FileHash -LiteralPath $pipelineFile).Hash
+    $duplicate = Join-Path $root 'duplicate'
+    Run @('download', $pipelineTorrent, '--out', $duplicate, '--peer', $fixturePeer) 1
+    if (Get-ChildItem -Force $duplicate) { throw 'A duplicate block left output behind' }
+    $resumeDir = Join-Path $root 'resume'
+    $partName = ".mytorrent-$resumeHash.part"
+    $partial = Join-Path $resumeDir $partName
+    $destination = Join-Path $resumeDir 'resume.bin'
+    $download = @('download', $resumeTorrent, '--out', $resumeDir, '--peer', $fixturePeer, '--resume')
+    Run $download 1
+    if ((Test-Path $destination) -or (Get-Item -Force $partial).Length -ne 16384) {
+        throw 'Interrupted download did not retain exactly one verified piece'
+    }
+
+    # An already-open partial must be left alone by a second downloader.
+    $lock = [IO.File]::Open($partial, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try { Run $download 1 } finally { $lock.Dispose() }
+
+    # Simulate an incomplete trailing write before restarting.
+    $stream = [IO.File]::Open($partial, [IO.FileMode]::Append)
+    try { $stream.WriteByte(42) } finally { $stream.Dispose() }
+    Run $download
+    $resumeSha256 = (Get-FileHash -LiteralPath $resumeFile).Hash
+    Assert-Hash $destination $resumeSha256
+    if (Test-Path $partial) { throw 'Finished resume left a partial file' }
+
+    Run $download 1
+    Assert-Hash $destination $resumeSha256
+    if (Test-Path $partial) { throw 'Existing output caused a new partial file' }
+
+    $repair = Join-Path $root 'repair'
+    $null = New-Item -ItemType Directory -Path $repair
+    $repairPart = Join-Path $repair $partName
+    $resumePayload[0] = $resumePayload[0] -bxor 255
+    [IO.File]::WriteAllBytes($repairPart, $resumePayload)
+    Run @('download', $resumeTorrent, '--out', $repair, '--peer', $fixturePeer, '--resume')
+    Assert-Hash (Join-Path $repair 'resume.bin') $resumeSha256
+
+    # A fully verified partial can be published without contacting a peer.
+    $offline = Join-Path $root 'offline'
+    $null = New-Item -ItemType Directory -Path $offline
+    Copy-Item -LiteralPath $resumeFile -Destination (Join-Path $offline $partName)
+    Run @('download', $resumeTorrent, '--out', $offline, '--peer', '127.0.0.1:1', '--resume')
+    Assert-Hash (Join-Path $offline 'resume.bin') $resumeSha256
     $null = Wait-Job $fixture -Timeout 5
     if ($fixture.State -ne 'Completed') { throw "Fixture peer failed with state $($fixture.State)" }
 } catch {

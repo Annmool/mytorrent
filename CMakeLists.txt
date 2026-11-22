@@ -4,7 +4,8 @@ if(NOT WIN32)
     message(FATAL_ERROR "MyTorrent 0.1 supports Windows.")
 endif()
 add_library(torrent_core
-    src/bencode.cpp src/metainfo.cpp src/storage.cpp src/net.cpp src/tracker.cpp src/transfer.cpp)
+    src/bencode.cpp src/metainfo.cpp src/storage.cpp src/net.cpp src/tracker.cpp
+    src/peer.cpp src/scheduler.cpp src/transfer.cpp)
 target_include_directories(torrent_core PUBLIC src)
 target_compile_features(torrent_core PUBLIC cxx_std_20)
 set_target_properties(torrent_core PROPERTIES CXX_EXTENSIONS OFF)
@@ -36,5 +37,7 @@ if(BUILD_TESTING)
     find_program(POWERSHELL_EXE NAMES pwsh powershell REQUIRED)
     add_test(NAME loopback COMMAND "${POWERSHELL_EXE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/loopback.ps1" -Exe "$<TARGET_FILE:mytorrent>")
-    set_tests_properties(loopback PROPERTIES TIMEOUT 75)
+    add_test(NAME parallel COMMAND "${POWERSHELL_EXE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel.ps1" -Exe "$<TARGET_FILE:mytorrent>")
+    set_tests_properties(loopback parallel PROPERTIES TIMEOUT 75)
 endif()

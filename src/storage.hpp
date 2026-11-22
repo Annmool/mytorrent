@@ -11,11 +11,13 @@ class OutputFile {
     std::filesystem::path temp_path;
     void* handle{};
     bool published{};
+    bool resumable{};
 public:
-    explicit OutputFile(std::filesystem::path path);
+    explicit OutputFile(std::filesystem::path path, std::string_view resume_hash = {});
     ~OutputFile();
     OutputFile(const OutputFile&) = delete;
     OutputFile& operator=(const OutputFile&) = delete;
+    std::uint32_t recheck(const Metainfo& meta);
     void write(std::string_view bytes);
     void publish();
 };

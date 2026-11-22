@@ -1,51 +1,56 @@
-param([string]$Root, [string]$InfoHash)
+param([string]$Root, [string]$InfoHash, [string]$PipelineHash, [string]$PipelineFile, [string]$ResumeHash, [string]$ResumeFile, [string]$WireScript)
 $ErrorActionPreference = 'Stop'
 
-function Read-Exact($Stream, [int]$Length) {
-    $bytes = [byte[]]::new($Length)
-    $position = 0
-    while ($position -lt $Length) {
-        $count = $Stream.Read($bytes, $position, $Length - $position)
-        if (!$count) { throw 'Unexpected EOF from BitTorrent client' }
-        $position += $count
-    }
-    return ,$bytes
-}
+. $WireScript
 
 $server = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $server.Start()
 try {
     [IO.File]::WriteAllText((Join-Path $Root 'fixture.port'), [string]$server.LocalEndpoint.Port)
-    foreach ($mode in @('valid', 'corrupt', 'wrong-offset', 'oversized')) {
+    foreach ($mode in @('valid', 'corrupt', 'wrong-offset', 'oversized', 'pipelined', 'duplicate', 'interrupt', 'resumed', 'repair')) {
         for ($attempts = 0; !$server.Pending(); $attempts++) {
             if ($attempts -ge 200) { throw "No fixture connection for $mode" }
             Start-Sleep -Milliseconds 50
         }
         $client = $server.AcceptTcpClient()
         try {
-            $client.ReceiveTimeout = 3000
-            $client.SendTimeout = 3000
-            $stream = $client.GetStream()
-            $handshake = Read-Exact $stream 68
-            $hex = ([BitConverter]::ToString($handshake, 28, 20)).Replace('-', '')
-            if ($handshake[0] -ne 19 -or
-                [Text.Encoding]::ASCII.GetString($handshake, 1, 19) -cne 'BitTorrent protocol' -or
-                $hex -ne $InfoHash) { throw 'Invalid handshake from client' }
-            [Text.Encoding]::ASCII.GetBytes('-FP0001-abcdefghijkl').CopyTo($handshake, 48)
-            $stream.Write($handshake, 0, 12)
-            $stream.Write($handshake, 12, 56)
-
-            # Keep-alive, one-piece bitfield, and unchoke.
-            $control = [byte[]]@(0,0,0,0, 0,0,0,2,5,128, 0,0,0,1,1)
-            $stream.Write($control, 0, $control.Length)
-            $interest = Read-Exact $stream 5
-            if ([BitConverter]::ToString($interest) -ne '00-00-00-01-02') {
-                throw 'Expected interested message'
+            $pipeline = $mode -in @('pipelined', 'duplicate')
+            $resume = $mode -in @('interrupt', 'resumed', 'repair')
+            $expectedHash = if ($resume) { $ResumeHash } elseif ($pipeline) { $PipelineHash } else { $InfoHash }
+            $bits = if ($resume) { 192 } else { 128 }
+            $stream = Start-Peer $client $expectedHash $bits '-FP0001-abcdefghijkl'
+            if ($resume) {
+                $payload = [IO.File]::ReadAllBytes($ResumeFile)
+                if ($mode -ne 'resumed') {
+                    Read-Request $stream 0 16384
+                    Send-Block $stream $payload 0 16384
+                }
+                $tail = $payload.Length - 16384
+                Read-Request $stream 0 $tail 1
+                if ($mode -ne 'interrupt') { Send-Block $stream $payload 0 $tail 1 }
+                continue
             }
-            $request = Read-Exact $stream 17
-            if ([BitConverter]::ToString($request) -ne '00-00-00-0D-06-00-00-00-00-00-00-00-00-00-00-00-03') {
-                throw 'Expected a request for all three payload bytes'
+            if ($pipeline) {
+                $payload = [IO.File]::ReadAllBytes($PipelineFile)
+                $blockSize = 16384
+                # Wait for the entire first window before sending any data.
+                for ($i = 0; $i -lt 8; $i++) { Read-Request $stream ($i * $blockSize) $blockSize }
+                Send-Block $stream $payload (7 * $blockSize) $blockSize
+                $tailOffset = 8 * $blockSize
+                $tailLength = $payload.Length - $tailOffset
+                # The client must refill the slot while earlier replies are pending.
+                Read-Request $stream $tailOffset $tailLength
+                if ($mode -eq 'duplicate') {
+                    Send-Block $stream $payload (7 * $blockSize) $blockSize
+                    continue
+                }
+                Send-Block $stream $payload $tailOffset $tailLength
+                for ($i = 6; $i -ge 0; $i--) {
+                    Send-Block $stream $payload ($i * $blockSize) $blockSize
+                }
+                continue
             }
+            Read-Request $stream 0 3
             $response = [byte[]]@(0,0,0,12, 7, 0,0,0,0, 0,0,0,0, 97,98,99)
             switch ($mode) {
                 'corrupt' { $response[15] = 100 }

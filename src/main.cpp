@@ -22,7 +22,7 @@ Usage:
   mytorrent inspect FILE.torrent
   mytorrent verify FILE.torrent --file FILE
   mytorrent seed FILE.torrent --file FILE [--port PORT] [--no-tracker]
-  mytorrent download FILE.torrent --out DIRECTORY [--peer IPV4:PORT]
+  mytorrent download FILE.torrent --out DIRECTORY [--peer IPV4:PORT] [--resume]
 )";
 
 std::string utf8(std::wstring_view text) {
@@ -47,7 +47,7 @@ public:
                 throw std::runtime_error("Unknown option: " + utf8(key));
             }
             std::wstring value;
-            if (key != L"--no-tracker") {
+            if (key != L"--no-tracker" && key != L"--resume") {
                 if (++i == argc || std::wstring_view(argv[i]).starts_with(L"--")) {
                     throw std::runtime_error("Missing option value: " + utf8(key));
                 }
@@ -120,13 +120,13 @@ int wmain(int argc, wchar_t** argv) {
             bt::seed(meta, options.get(L"--file"), static_cast<std::uint16_t>(options.number(L"--port", 6881, 65535)),
                      !options.has(L"--no-tracker"), stopped);
         } else {
-            const Options options(argc, argv, {L"--out", L"--peer"});
+            const Options options(argc, argv, {L"--out", L"--peer", L"--resume"});
             const bt::Network network;
             if (options.has(L"--peer")) {
                 const auto peer = bt::parse_endpoint(utf8(options.get(L"--peer")));
-                bt::download(meta, options.get(L"--out"), &peer);
+                bt::download(meta, options.get(L"--out"), &peer, options.has(L"--resume"));
             } else {
-                bt::download(meta, options.get(L"--out"), nullptr);
+                bt::download(meta, options.get(L"--out"), nullptr, options.has(L"--resume"));
             }
             std::cout << "Download verified and saved\n";
         }
