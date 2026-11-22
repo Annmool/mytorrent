@@ -1,3 +1,4 @@
+#include "discovery.hpp"
 #include "storage.hpp"
 #include "transfer.hpp"
 #include "peer.hpp"
@@ -77,9 +78,12 @@ void download(const Metainfo& meta, const std::filesystem::path& directory, cons
     }
     const auto id = peer_id();
     Announce state{0, meta.length - verified_bytes};
-    const auto peers = direct ? std::vector<Endpoint>{*direct} : announce(meta, id, state, "started").peers;
+    auto reply = direct ? TrackerReply{0, {*direct}} : announce(meta, id, state, "started");
     try {
-        download_pieces(meta, id, peers, index, output, state);
+        if (!direct && reply.peers.empty()) {
+            reply.peers = wait_for_tracker_peers(meta, id, state, reply.interval);
+        }
+        download_pieces(meta, id, reply.peers, index, output, state);
         output.publish();
         if (!direct) report_announce(meta, id, state, "completed");
     } catch (...) {

@@ -16,6 +16,8 @@ Start with **src/main.cpp**. The entry point is wmain so Windows passes paths as
 
 The seeder announces that it has zero bytes left. The tracker responds to a downloader with candidate endpoints. Files flow over peer connections. For a local experiment, an explicit --peer skips discovery entirely.
 
+**src/discovery.cpp** handles an empty tracker response. It displays the suggested wait time, then announces again without repeating the started event. A new empty reply can supply a different interval. The scoped console interrupt handler lets Ctrl+C leave the wait, after which the download sends a stopped announce.
+
 ## 3. Connect and exchange messages
 
 **src/net.cpp** wraps Winsock in Network and Socket. Constructors acquire resources and destructors release them. The sockets are nonblocking during transfer. wait_for waits until the socket is ready and shares a deadline across the partial reads or writes for one operation. receive_into reconstructs the requested byte span even when recv returns it in fragments.
@@ -53,5 +55,7 @@ OutputFile::recheck walks the file in piece order. The same piece hashes used du
 - **tests/fixture-peer.ps1** independently writes and reads wire messages. It checks a valid block, then sends a corrupt block, a wrong block offset, and an oversized length prefix. It also waits for eight requests before sending any data, verifies that the client refills the window, and sends replies out of order. The integration script checks byte-for-byte output and verifies that failures, including duplicate replies, leave the destination empty by default. Resume cases interrupt a transfer after one piece, check which piece is requested after restarting, and cover incomplete tails, corrupt saved data, exclusive access, and publication without a peer.
 
 - **tests/parallel.ps1** uses three independent fixture peers. It withholds the first response until a second connection requests another piece, then drops the first peer and finishes through a backup. The surviving peers supply complementary pieces past the initial eight-piece window. The test checks the final file, tracker counters, and duplicate endpoint handling.
+
+- **tests/discovery.ps1** starts the downloader before the seed, verifies two tracker intervals and the announce events, and compares the downloaded file with the source.
 
 To see piece count change, create torrents for the same file with different --piece-size values and inspect both. Then modify one byte of a copy and run verify against the original torrent. The first failing piece index tells you which region changed.

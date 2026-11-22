@@ -1,3 +1,4 @@
+#include "console_interrupt.hpp"
 #include "storage.hpp"
 #include "transfer.hpp"
 
@@ -9,13 +10,6 @@
 #include <stdexcept>
 
 namespace {
-std::atomic_bool stopped{};
-BOOL WINAPI on_console(DWORD event) {
-    if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) return FALSE;
-    stopped = true;
-    return TRUE;
-}
-
 constexpr auto usage = R"(MyTorrent 0.1.0
 Usage:
   mytorrent create FILE --tracker URL --out FILE.torrent [--piece-size BYTES]
@@ -116,9 +110,9 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == L"seed") {
             const Options options(argc, argv, {L"--file", L"--port", L"--no-tracker"});
             const bt::Network network;
-            if (!SetConsoleCtrlHandler(on_console, TRUE)) throw std::runtime_error("Cannot set console handler");
+            const bt::ConsoleInterrupt interrupt;
             bt::seed(meta, options.get(L"--file"), static_cast<std::uint16_t>(options.number(L"--port", 6881, 65535)),
-                     !options.has(L"--no-tracker"), stopped);
+                     !options.has(L"--no-tracker"), interrupt.requested());
         } else {
             const Options options(argc, argv, {L"--out", L"--peer", L"--resume"});
             const bt::Network network;
