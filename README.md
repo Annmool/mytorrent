@@ -81,7 +81,7 @@ Give the recipient the torrent file and have them run:
 "%MYTORRENT%" download ".local\tracked.torrent" --out ".local\tracked-download"
 ~~~
 
-The downloader can use up to four tracker-discovered peers. If the tracker returns an empty peer list, MyTorrent waits for the advertised interval and asks again. Press Ctrl+C to cancel while waiting. The tracker must accept outbound-only clients announcing port 0, and the seeder must be reachable on its chosen TCP port.
+The downloader can use up to four tracker-discovered peers. If the tracker returns an empty peer list, MyTorrent waits for the advertised interval and asks again. Press Ctrl+C to cancel while waiting. Windows chooses an available TCP port for the downloader, and MyTorrent announces that port to the tracker. The seeder must be reachable on its chosen TCP port.
 
 ## Resume an interrupted download
 
@@ -98,7 +98,7 @@ MyTorrent keeps a .mytorrent-<info-hash>.part file in the output directory. It v
 ## Release scope
 
 - Single-file v1, nonempty payloads, IPv4 TCP peers. Seeded files must stay unchanged while serving.
-- The seeder serves one connection at a time and announces periodically. The outbound-only downloader uses up to four peers concurrently from the first nonempty tracker response. An explicit peer address selects one connection. The seeder is a separate command after a successful download.
+- The seeder serves one connection at a time and announces periodically. The downloader requests pieces from up to four peers concurrently from the first nonempty tracker response. It answers incoming handshakes in tracker mode and keeps those peers choked. An explicit peer address selects one outbound connection. Use the separate seed command to serve a verified file.
 - Each connection pipelines up to eight block requests for its assigned piece. The scheduler buffers up to eight pieces near the write position, and an unfinished piece can be reassigned when a peer fails. Use the resume flag to preserve progress across runs.
 - Multi-file torrents, private tracker flags, UDP trackers, IPv6 peers, magnet links, DHT, and v2 or hybrid torrents are future work.
 - Verified on Windows using GCC and Ninja. The test tracker and peer are fixtures. Compatibility with public trackers and third-party desktop clients has yet to be tested.

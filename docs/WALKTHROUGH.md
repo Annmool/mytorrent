@@ -14,7 +14,7 @@ Start with **src/main.cpp**. The entry point is wmain so Windows passes paths as
 
 **src/tracker.cpp** sends the info hash, peer ID, port, and transfer counters. escape_query percent-encodes each byte with two hex digits so arbitrary digest and peer ID bytes survive the URL. WinHTTP handles HTTP framing and HTTPS. parse_tracker_reply understands dictionary peer entries and compact records, where four bytes are the IPv4 address and two are the port in network byte order.
 
-The seeder announces that it has zero bytes left. The tracker responds to a downloader with candidate endpoints. Files flow over peer connections. For a local experiment, an explicit --peer skips discovery entirely.
+The seeder announces that it has zero bytes left. Before its first announce, a tracker-mode download calls Socket::listen_on with port 0 to let Windows select an available port. Socket::port reads the bound port, which **src/transfer.cpp** puts in the Announce state. Retries and the completed and stopped events use the same port. The tracker responds with candidate endpoints, and files flow over peer connections. An explicit --peer skips the tracker and uses one outbound connection.
 
 **src/discovery.cpp** handles an empty tracker response. It displays the suggested wait time, then announces again without repeating the started event. A new empty reply can supply a different interval. The scoped console interrupt handler lets Ctrl+C leave the wait, after which the download sends a stopped announce.
 
@@ -23,6 +23,8 @@ The seeder announces that it has zero bytes left. The tracker responds to a down
 **src/net.cpp** wraps Winsock in Network and Socket. Constructors acquire resources and destructors release them. The sockets are nonblocking during transfer. wait_for waits until the socket is ready and shares a deadline across the partial reads or writes for one operation. receive_into reconstructs the requested byte span even when recv returns it in fragments.
 
 **src/peer.cpp** sends and validates the 68-byte v1 handshake. Both sides must agree on the info hash. The seeder follows with a bitfield, a compact list of which pieces it has. The downloader declares interest and waits for an unchoke before requesting data. word and number encode and decode four-byte network-order integers. next reads the length prefix, rejects oversized frames, then reads the body. A zero-length frame is a keep-alive.
+
+While a tracker-mode download runs, listen_for_download_peers accepts incoming connections one at a time and replies to valid handshakes using the announced peer ID. BitTorrent connections start choked, so the downloader can keep incoming peers choked while its outbound connections request pieces. The listener thread can stop even if an incoming peer stalls during a read.
 
 **Read the code:** Follow Downloader::get_piece. Each request names the piece index, the offset within that piece, and the number of bytes. The downloader keeps up to eight requests outstanding and sends another when a valid reply frees a slot. A full 256 KiB piece still takes sixteen 16 KiB requests. Sending several before waiting reduces the time spent waiting for round trips.
 
@@ -56,6 +58,6 @@ OutputFile::recheck walks the file in piece order. The same piece hashes used du
 
 - **tests/parallel.ps1** uses three independent fixture peers. It withholds the first response until a second connection requests another piece, then drops the first peer and finishes through a backup. The surviving peers supply complementary pieces past the initial eight-piece window. The test checks the final file, tracker counters, and duplicate endpoint handling.
 
-- **tests/discovery.ps1** starts the downloader before the seed, verifies two tracker intervals and the announce events, and compares the downloaded file with the source.
+- **tests/discovery.ps1** starts the downloader before the seed. Its tracker rejects port 0, checks that the advertised port stays consistent, and completes an incoming handshake during the started and stopped announces. It also verifies two tracker intervals and compares the downloaded file with the source.
 
 To see piece count change, create torrents for the same file with different --piece-size values and inspect both. Then modify one byte of a copy and run verify against the original torrent. The first failing piece index tells you which region changed.

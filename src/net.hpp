@@ -1,6 +1,7 @@
 #pragma once
 #include <winsock2.h>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -30,8 +31,8 @@ public:
     bool has_peer() const;
     Socket accept_peer() const;
     std::uint16_t port() const;
-    std::string receive(std::size_t size) const;
-    bool receive_into(std::string& buffer, bool allow_eof = false) const;
-    void send_all(std::string_view bytes) const;
+    std::string receive(std::size_t size, std::stop_token stop = {}) const;
+    bool receive_into(std::string& buffer, bool allow_eof = false, std::stop_token stop = {}) const;
+    void send_all(std::string_view bytes, std::stop_token stop = {}) const;
 };
 }

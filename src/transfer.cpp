@@ -78,6 +78,19 @@ void download(const Metainfo& meta, const std::filesystem::path& directory, cons
     }
     const auto id = peer_id();
     Announce state{0, meta.length - verified_bytes};
+    std::jthread incoming;
+    if (!direct) {
+        auto listener = Socket::listen_on(0);
+        state.port = listener.port();
+        std::cout << "Listening on TCP port " << state.port << std::endl;
+        incoming = std::jthread([listener = std::move(listener), &meta, &id](std::stop_token stop) {
+            try {
+                listen_for_download_peers(listener, meta, id, stop);
+            } catch (const std::exception& error) {
+                std::cerr << "Incoming peers: " << error.what() << '\n';
+            }
+        });
+    }
     auto reply = direct ? TrackerReply{0, {*direct}} : announce(meta, id, state, "started");
     try {
         if (!direct && reply.peers.empty()) {

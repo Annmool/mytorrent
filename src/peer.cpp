@@ -31,13 +31,15 @@ std::uint32_t number(std::string_view bytes, std::size_t offset = 0) {
     return value;
 }
 
-void send_handshake(const Socket& peer, const Metainfo& meta, std::string_view id) {
+void send_handshake(const Socket& peer, const Metainfo& meta, std::string_view id,
+                    std::stop_token stop = {}) {
     peer.send_all(std::string(1, static_cast<char>(protocol.size())) + std::string(protocol) +
-                  std::string(8, '\0') + meta.info_hash + std::string(id));
+                  std::string(8, '\0') + meta.info_hash + std::string(id), stop);
 }
 
-void expect_handshake(const Socket& peer, const Metainfo& meta, std::string_view id) {
-    const auto handshake = peer.receive(68);
+void expect_handshake(const Socket& peer, const Metainfo& meta, std::string_view id,
+                      std::stop_token stop = {}) {
+    const auto handshake = peer.receive(68, stop);
     if (static_cast<unsigned char>(handshake[0]) != protocol.size() ||
         handshake.substr(1, protocol.size()) != protocol || handshake.substr(28, 20) != meta.info_hash ||
         handshake.substr(48) == id) {
@@ -50,18 +52,34 @@ void send(const Socket& peer, Message type, std::string_view payload = {}) {
                   static_cast<char>(type) + std::string(payload));
 }
 
-std::optional<std::string> next(const Socket& peer, const Metainfo& meta) {
+std::optional<std::string> next(const Socket& peer, const Metainfo& meta, std::stop_token stop = {}) {
     std::string prefix(4, '\0');
-    if (!peer.receive_into(prefix, true)) return std::nullopt;
+    if (!peer.receive_into(prefix, true, stop)) return std::nullopt;
     const auto length = number(prefix);
     if (length > std::max(9 + block_size, 1 + (meta.count() + 7) / 8)) {
         throw std::runtime_error("Oversized peer message");
     }
-    return peer.receive(length);
+    return peer.receive(length, stop);
 }
 
 unsigned char mask(std::uint32_t index) { return static_cast<unsigned char>(0x80 >> (index % 8)); }
 
+}
+
+void listen_for_download_peers(const Socket& listener, const Metainfo& meta, std::string_view id,
+                               std::stop_token stop) {
+    while (!stop.stop_requested()) {
+        if (!listener.has_peer() || stop.stop_requested()) continue;
+        try {
+            const auto peer = listener.accept_peer();
+            expect_handshake(peer, meta, id, stop);
+            send_handshake(peer, meta, id, stop);
+            // Connections start choked. The downloader does not offer pieces to incoming peers.
+            while (!stop.stop_requested() && next(peer, meta, stop)) {}
+        } catch (const std::runtime_error&) {
+            // A disconnected, idle, or malformed peer does not affect the download.
+        }
+    }
 }
 
 void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view id, std::istream& file,

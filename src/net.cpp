@@ -16,20 +16,27 @@ constexpr auto timeout = std::chrono::seconds(10);
     throw std::system_error(code, std::system_category(), operation);
 }
 
-void wait_for(SOCKET socket, bool writing, Clock::time_point deadline, bool connecting = false) {
-    const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
-    if (remaining.count() <= 0) throw std::runtime_error("Socket deadline exceeded");
-    timeval time{static_cast<long>(remaining.count() / 1000000),
-                 static_cast<long>(remaining.count() % 1000000)};
-    fd_set ready, errors;
-    FD_ZERO(&ready);
-    FD_ZERO(&errors);
-    FD_SET(socket, &ready);
-    FD_SET(socket, &errors);
-    const int result = select(0, writing ? nullptr : &ready, writing ? &ready : nullptr,
-                              connecting ? &errors : nullptr, &time);
-    if (result == SOCKET_ERROR) net_error("Waiting for socket");
-    if (!result) throw std::runtime_error("Socket timed out");
+bool wait_for(SOCKET socket, bool writing, Clock::time_point deadline, bool connecting = false,
+              std::stop_token stop = {}) {
+    using namespace std::chrono;
+    while (!stop.stop_requested()) {
+        const auto remaining = duration_cast<microseconds>(deadline - Clock::now());
+        if (remaining.count() <= 0) throw std::runtime_error("Socket deadline exceeded");
+        const auto slice = stop.stop_possible() ? std::min(remaining, microseconds{100000}) : remaining;
+        timeval time{static_cast<long>(slice.count() / 1000000),
+                     static_cast<long>(slice.count() % 1000000)};
+        fd_set ready, errors;
+        FD_ZERO(&ready);
+        FD_ZERO(&errors);
+        FD_SET(socket, &ready);
+        FD_SET(socket, &errors);
+        const int result = select(0, writing ? nullptr : &ready, writing ? &ready : nullptr,
+                                  connecting ? &errors : nullptr, &time);
+        if (result == SOCKET_ERROR) net_error("Waiting for socket");
+        if (result) return !stop.stop_requested();
+        if (slice == remaining) throw std::runtime_error("Socket timed out");
+    }
+    return false;
 }
 
 sockaddr_in address(const Endpoint& endpoint) {
@@ -122,10 +129,10 @@ std::uint16_t Socket::port() const {
     return ntohs(addr.sin_port);
 }
 
-bool Socket::receive_into(std::string& buffer, bool allow_eof) const {
+bool Socket::receive_into(std::string& buffer, bool allow_eof, std::stop_token stop) const {
     const auto deadline = Clock::now() + timeout;
     for (std::size_t offset = 0; offset < buffer.size();) {
-        wait_for(handle, false, deadline);
+        if (!wait_for(handle, false, deadline, false, stop)) return false;
         const auto size = static_cast<int>(std::min<std::size_t>(buffer.size() - offset, 65536));
         const int result = recv(handle, buffer.data() + offset, size, 0);
         if (result == 0) {
@@ -141,16 +148,16 @@ bool Socket::receive_into(std::string& buffer, bool allow_eof) const {
     return true;
 }
 
-std::string Socket::receive(std::size_t size) const {
+std::string Socket::receive(std::size_t size, std::stop_token stop) const {
     std::string buffer(size, '\0');
-    receive_into(buffer);
+    if (!receive_into(buffer, false, stop)) throw std::runtime_error("Socket read cancelled");
     return buffer;
 }
 
-void Socket::send_all(std::string_view bytes) const {
+void Socket::send_all(std::string_view bytes, std::stop_token stop) const {
     const auto deadline = Clock::now() + timeout;
     while (!bytes.empty()) {
-        wait_for(handle, true, deadline);
+        if (!wait_for(handle, true, deadline, false, stop)) return;
         const auto size = static_cast<int>(std::min<std::size_t>(bytes.size(), 65536));
         const int result = send(handle, bytes.data(), size, 0);
         if (result == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) continue;

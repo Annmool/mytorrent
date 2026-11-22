@@ -18,16 +18,50 @@ function Wait-Marker([string]$Name) {
 }
 
 try {
-    $tracker = Start-Job -ArgumentList $root -ScriptBlock {
-        param($root)
+    $wire = Join-Path $PSScriptRoot 'peer-wire.ps1'
+    $tracker = Start-Job -ArgumentList $root, $wire -ScriptBlock {
+        param($root, $wire)
         $ErrorActionPreference = 'Stop'
+        . $wire
+
+        function Connect-Downloader($Query, [int]$Port) {
+            $peer = [Net.Sockets.TcpClient]::new()
+            try {
+                $peer.ReceiveTimeout = 2500
+                $peer.SendTimeout = 2500
+                $peer.Connect([Net.IPAddress]::Loopback, $Port)
+                $stream = $peer.GetStream()
+                $handshake = [byte[]]::new(68)
+                $handshake[0] = 19
+                [Text.Encoding]::ASCII.GetBytes('BitTorrent protocol').CopyTo($handshake, 1)
+                $hash = [byte[]]@($Query['info_hash'].Substring(1).Split('%') | ForEach-Object {
+                    [Convert]::ToByte($_, 16)
+                })
+                $hash.CopyTo($handshake, 28)
+                [Text.Encoding]::ASCII.GetBytes('-FIX001-InboundProbe').CopyTo($handshake, 48)
+                $stream.Write($handshake, 0, $handshake.Length)
+                $reply = Read-Exact $stream 68
+                $peerId = '%' + ([BitConverter]::ToString($reply, 48, 20)).Replace('-', '%')
+                if ($reply[0] -ne 19 -or
+                    [Text.Encoding]::ASCII.GetString($reply, 1, 19) -cne 'BitTorrent protocol' -or
+                    [BitConverter]::ToString($reply, 28, 20) -cne [BitConverter]::ToString($hash) -or
+                    $peerId -ine $Query['peer_id']) {
+                    throw 'Handshake did not match the tracker announce'
+                }
+                return $peer
+            } catch {
+                $peer.Dispose()
+                throw
+            }
+        }
         $server = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
         $server.Start()
         [IO.File]::WriteAllText((Join-Path $root 'tracker.port'), [string]$server.LocalEndpoint.Port)
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $encoding = [Text.Encoding]::GetEncoding(28591)
         $downloader = ''
-        $seedPort = $retries = $last = 0
+        $seedPort = $downloadPort = $retries = $last = 0
+        $idlePeer = $null
         $completed = $false
         try {
             while (!(Test-Path (Join-Path $root 'tracker.stop'))) {
@@ -46,15 +80,29 @@ try {
                         $query[$key] = $value
                     }
                     $body = 'd8:intervali1e5:peers0:e'
-                    if ($query['port'] -ne '0') {
-                        $seedPort = [int]$query['port']
-                    } elseif ($query['event'] -eq 'started') {
-                        if ($downloader -or $seedPort) { throw 'Expected one started event before seeding' }
+                    $announcePort = 0
+                    if (!([int]::TryParse($query['port'], [ref]$announcePort)) -or
+                        $announcePort -lt 1 -or $announcePort -gt 65535) {
+                        $body = 'd14:failure reason20:Invalid tracker porte'
+                    } elseif (!$downloader) {
+                        if ($query['event'] -ne 'started' -or $query['left'] -ne '66019') {
+                            throw 'Expected the downloader to announce first'
+                        }
                         $downloader = $query['peer_id']
+                        $downloadPort = $announcePort
+                        $probe = Connect-Downloader $query $downloadPort
+                        $probe.Dispose()
                         $last = $clock.ElapsedMilliseconds
                         [IO.File]::WriteAllText((Join-Path $root 'initial'), 'empty')
                     } elseif ($query['peer_id'] -cne $downloader) {
-                        throw 'Peer ID changed between announces'
+                        if ($query['left'] -ne '0' -or $announcePort -eq $downloadPort -or
+                            (!$seedPort -and $query['event'] -ne 'started') -or
+                            ($seedPort -and $seedPort -ne $announcePort)) {
+                            throw 'Unexpected peer ID or seeder port'
+                        }
+                        $seedPort = $announcePort
+                    } elseif ($announcePort -ne $downloadPort) {
+                        throw 'Downloader changed ports between announces'
                     } elseif (!$query.ContainsKey('event')) {
                         $minimum = if ($retries -eq 0) { 1000 } else { 2000 }
                         $now = $clock.ElapsedMilliseconds
@@ -75,13 +123,18 @@ try {
                         $completed = $true
                     } elseif ($query['event'] -eq 'stopped') {
                         if (!$completed) { throw 'Stopped before completion' }
+                        # Leave this peer idle to check that shutdown does not wait for its read timeout.
+                        $idlePeer = Connect-Downloader $query $downloadPort
                         [IO.File]::WriteAllText((Join-Path $root 'finished'), 'complete')
                     } else { throw "Unexpected event: $line" }
                     $reply = $encoding.GetBytes("HTTP/1.1 200 OK`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n$body")
                     $stream.Write($reply, 0, $reply.Length)
                 } finally { $client.Dispose() }
             }
-        } finally { $server.Stop() }
+        } finally {
+            if ($idlePeer) { $idlePeer.Dispose() }
+            $server.Stop()
+        }
     }
 
     $port = Wait-Marker 'tracker.port'
@@ -106,7 +159,7 @@ try {
         (Get-FileHash -LiteralPath (Join-Path $out 'late.bin')).Hash) { throw 'Output differs from source' }
     $messages = @(Select-String -LiteralPath $log -SimpleMatch 'Waiting for peers')
     if ($messages.Count -ne 2) { throw 'Expected two waiting messages' }
-    Write-Output 'Downloader found the late seed without restarting and honored both tracker intervals.'
+    Write-Output 'Strict tracker accepted the live download port and the downloader found the late seed.'
 } catch {
     if ($tracker) { Receive-Job $tracker -ErrorAction Continue }
     if ($log -and (Test-Path -LiteralPath $log)) { Get-Content -LiteralPath $log }
