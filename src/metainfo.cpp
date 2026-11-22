@@ -1,12 +1,10 @@
 #include "metainfo.hpp"
 #include "bencode.hpp"
-#include "storage.hpp"
+#include "payload.hpp"
 
 #include <windows.h>
 #include <bcrypt.h>
 #include <algorithm>
-#include <cstdio>
-#include <fstream>
 #include <stdexcept>
 #include <system_error>
 
@@ -39,7 +37,33 @@ void validate_tracker(std::string_view url) {
     }
 }
 
+std::vector<TorrentFile> parse_files(const Value::List& entries) {
+    std::vector<TorrentFile> files;
+    files.reserve(entries.size());
+    for (const auto& entry : entries) {
+        const auto length = entry.at("length").integer();
+        const auto& components = entry.at("path").list();
+        if (length < 0 || components.empty() || components.size() > max_path_components) {
+            throw std::runtime_error("Invalid torrent file length or path depth");
+        }
+        fs::path path;
+        for (const auto& component : components) path /= safe_name(component.bytes());
+        files.push_back({std::move(path), static_cast<std::uint64_t>(length)});
+    }
+    return files;
+}
 
+Value encode_files(const std::vector<TorrentFile>& files) {
+    Value::List entries;
+    entries.reserve(files.size());
+    for (const auto& file : files) {
+        Value::List path;
+        for (const auto& component : file.path) path.push_back(Value{path_utf8(component)});
+        entries.push_back(Value{Value::Dict{{"length", Value{static_cast<std::int64_t>(file.length)}},
+                                            {"path", Value{std::move(path)}}}});
+    }
+    return Value{std::move(entries)};
+}
 }
 
 std::string sha1(std::string_view bytes) {
@@ -115,18 +139,27 @@ bool Metainfo::matches(std::uint32_t index, std::string_view data) const {
 Metainfo parse_metainfo(std::string_view bytes) {
     const auto root = decode(bytes);
     const auto& info = root.at("info");
-    if (info.dict().contains("files") || info.dict().contains("meta version")) {
-        throw std::runtime_error("Expected a single-file v1 torrent");
+    const auto has_files = info.dict().contains("files");
+    if (has_files == info.dict().contains("length") || info.dict().contains("meta version")) {
+        throw std::runtime_error("Expected a v1 torrent with either length or files");
     }
     if (info.dict().contains("private")) throw std::runtime_error("Private torrent flags are unsupported");
-    const auto length = info.at("length").integer();
     const auto piece_length = info.at("piece length").integer();
-    if (length <= 0 || piece_length <= 0 || piece_length > max_piece_size) {
-        throw std::runtime_error("Unsupported file length or piece size");
+    if (piece_length <= 0 || piece_length > max_piece_size) {
+        throw std::runtime_error("Unsupported piece size");
+    }
+    auto files = has_files ? parse_files(info.at("files").list()) : std::vector<TorrentFile>{};
+    std::uint64_t length{};
+    if (has_files) {
+        length = assign_file_offsets(files);
+    } else {
+        const auto file_length = info.at("length").integer();
+        if (file_length <= 0) throw std::runtime_error("Unsupported file length");
+        length = static_cast<std::uint64_t>(file_length);
     }
     Metainfo meta{info.at("name").bytes(), root.at("announce").bytes(),
-        static_cast<std::uint64_t>(length), static_cast<std::uint32_t>(piece_length),
-        info.at("pieces").bytes(), sha1(bytes.substr(info.begin, info.end - info.begin))};
+        length, static_cast<std::uint32_t>(piece_length), info.at("pieces").bytes(),
+        sha1(bytes.substr(info.begin, info.end - info.begin)), std::move(files)};
     validate_tracker(meta.announce);
     safe_name(meta.name);
     const auto expected = 1 + (meta.length - 1) / meta.piece_length;
@@ -137,10 +170,12 @@ Metainfo parse_metainfo(std::string_view bytes) {
 }
 
 Metainfo load_metainfo(const fs::path& path) {
-    const auto size = fs::file_size(path);
+    const auto file = open_handle(path, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, 0);
+    const auto size = file_length(file.get());
     if (size > metadata_limit) throw std::runtime_error("Torrent metadata is too large");
-    std::ifstream file(path, std::ios::binary);
-    return parse_metainfo(read_exact(file, static_cast<std::size_t>(size)));
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    read_file(file.get(), bytes);
+    return parse_metainfo(bytes);
 }
 
 std::string create_metainfo(const fs::path& path, std::string announce, std::uint32_t piece_length) {
@@ -149,25 +184,32 @@ std::string create_metainfo(const fs::path& path, std::string announce, std::uin
         (piece_length & (piece_length - 1))) {
         throw std::runtime_error("Piece size must be a power of two between 16 KiB and 16 MiB");
     }
-    const auto length = fs::file_size(path);
-    if (!length || 1 + (length - 1) / piece_length > (metadata_limit - 8192) / digest_size) {
-        throw std::runtime_error("Empty file or too many pieces for the metadata limit");
-    }
-    const auto utf8 = path.filename().u8string();
-    const std::string name(utf8.begin(), utf8.end());
+    auto source = fs::absolute(path).lexically_normal().make_preferred();
+    if (!source.has_filename() && source.has_relative_path()) source = source.parent_path();
+    const auto name = path_utf8(source.filename());
     safe_name(name);
-
-    std::ifstream file(path, std::ios::binary);
-    std::string hashes;
-    for (auto remaining = length; remaining > 0;) {
-        const auto bytes = std::min<std::uintmax_t>(piece_length, remaining);
-        hashes += sha1(read_exact(file, static_cast<std::size_t>(bytes)));
-        remaining -= bytes;
+    const bool folder = fs::is_directory(source);
+    auto files = folder ? collect_folder_files(source) : std::vector<TorrentFile>{};
+    const auto length = folder ? assign_file_offsets(files) : fs::file_size(source);
+    if (!length || 1 + (length - 1) / piece_length > (metadata_limit - 8192) / digest_size) {
+        throw std::runtime_error("Empty payload or too many pieces for the metadata limit");
     }
-    if (file.peek() != EOF || !file.eof() || file.bad()) throw std::runtime_error("Source changed or read failed");
-    Value::Dict info{{"length", Value{static_cast<std::int64_t>(length)}}, {"name", Value{name}},
+
+    PayloadReader payload(source, length, files);
+    std::string hashes;
+    for (std::uint64_t offset = 0; offset < length;) {
+        const auto size = static_cast<std::uint32_t>(std::min<std::uint64_t>(piece_length, length - offset));
+        hashes += sha1(payload.read(offset, size));
+        offset += size;
+    }
+    Value::Dict info{{"name", Value{name}},
                      {"piece length", Value{std::int64_t(piece_length)}}, {"pieces", Value{std::move(hashes)}}};
-    return encode(Value{Value::Dict{{"announce", Value{std::move(announce)}}, {"info", Value{std::move(info)}}}});
+    if (folder) info.emplace("files", encode_files(files));
+    else info.emplace("length", Value{static_cast<std::int64_t>(length)});
+    auto torrent = encode(Value{Value::Dict{{"announce", Value{std::move(announce)}},
+                                            {"info", Value{std::move(info)}}}});
+    if (torrent.size() > metadata_limit) throw std::runtime_error("Torrent metadata is too large");
+    return torrent;
 }
 
 }

@@ -9,6 +9,7 @@
 
 namespace bt {
 inline constexpr std::size_t metadata_limit = 8 * 1024 * 1024;
+inline constexpr std::size_t bencode_value_limit = 250000;
 struct Value {
     using List = std::vector<Value>;
     using Dict = std::map<std::string, Value, std::less<>>;

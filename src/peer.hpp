@@ -7,9 +7,11 @@
 #include <optional>
 
 namespace bt {
+class PayloadReader;
+
 void listen_for_download_peers(const Socket& listener, const Metainfo& meta, std::string_view id,
                                std::stop_token stop);
-void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view id, std::istream& file,
+void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view id, PayloadReader& payload,
                     std::atomic_uint64_t& uploaded, const std::atomic_bool& stopped);
 
 class PeerDownload {

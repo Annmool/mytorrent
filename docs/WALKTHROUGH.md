@@ -1,10 +1,14 @@
 # Read the implementation in transfer order
 
-## 1. Create a map of the file
+## 1. Create a map of the payload
 
 Start with **src/main.cpp**. The entry point is wmain so Windows passes paths as Unicode. Options checks the command's allowed flags, rejects repeats, and validates numeric values. The entry point dispatches to the relevant module and converts exceptions into an error message and exit code 1.
 
 **src/metainfo.cpp** starts with the file on disk. create_metainfo reads at most one piece at a time. The default piece size is 256 KiB. If the file has 600 KiB, it produces three hashes for pieces of 256, 256, and 88 KiB. Each digest occupies 20 raw bytes in the pieces field. hex is for display, and the digest field stays binary. BCrypt wraps Windows' cryptographic API, and peer_id creates a random identifier with an eight-byte client prefix.
+
+In a folder torrent, the info dictionary holds a files list. Each entry has a length and a list of path components. **src/file_layout.cpp** validates path collisions and assigns offsets by adding file lengths in list order. When creating a torrent, MyTorrent sorts the source paths before assigning offsets, so the same folder produces the same file order on repeated runs. When reading a torrent, it preserves the order recorded by the creator.
+
+**src/payload.cpp** treats those files as one byte stream. PayloadReader::read finds the first file whose end falls after the requested offset, then reads as many files as necessary to fill the buffer. If the first file is 12 KiB and a piece is 16 KiB, the read combines that first file with 4 KiB from the next one. Empty files have an offset but contribute no bytes. The same reads feed piece hashes during creation and verification and block replies during seeding.
 
 **src/bencode.cpp** writes the outer tracker field and info dictionary. Bencode represents a byte string as its decimal byte length, a colon, and the bytes. For example, 3:cat is the string cat. Integers use i and e delimiters, while lists and dictionaries use l or d plus a closing e. Value stores those four types. Parser::parse consumes one value recursively, records its byte offsets, and limits the number of values and the nesting depth. The encoder visits those same four types and emits dictionary keys in order.
 
@@ -34,9 +38,11 @@ The response repeats the piece index and offset before the actual block. next_of
 
 Downloader::get_piece assembles blocks into one buffer and compares its SHA-1 digest with the expected piece digest. The scheduler receives that buffer after validation. The transfer entry points in **src/transfer.cpp** connect peer discovery, scheduling, and storage.
 
-**src/storage.cpp** handles exact file reads, local verification, and output publishing. OutputFile uses an exclusive handle for the partial file. publish flushes and renames it while still holding that handle, with replacement disabled. The destructor removes incomplete output on ordinary failure unless resume was requested. The filename from metadata passes safe_name in metainfo.cpp before it becomes part of the destination path.
+**src/storage.cpp** manages the verified byte stream in an exclusively opened partial file. For a single-file torrent, OutputFile::publish flushes the file and renames it with replacement disabled. The destructor removes incomplete output on ordinary failure unless resume was requested. Each path component from metadata passes safe_name in metainfo.cpp before the client uses it on disk.
 
-For uploads, seed verifies the full source once, then upload checks every requested range before seeking to the requested offset. A background thread handles tracker re-announces so a peer transfer can continue while the tracker responds.
+For folder downloads, **src/folder_output.cpp** reads each file's byte range out of the verified partial stream into a fresh staging directory. It creates files exclusively, checks directory handles for reparse points, and renames the entire directory into place with replacement disabled. After publication, MyTorrent discards the partial stream. The scheduler uses the same piece offsets for both layouts.
+
+For uploads, seed verifies the full source once, then upload checks every requested range before reading from the logical byte offset. Folder reads open the directories below the source root without following reparse points. A background thread handles tracker re-announces so a peer transfer can continue while the tracker responds.
 
 ## 5. Assign pieces to multiple peers
 
@@ -59,5 +65,7 @@ OutputFile::recheck walks the file in piece order. The same piece hashes used du
 - **tests/parallel.ps1** uses three independent fixture peers. It withholds the first response until a second connection requests another piece, then drops the first peer and finishes through a backup. The surviving peers supply complementary pieces past the initial eight-piece window. The test checks the final file, tracker counters, and duplicate endpoint handling.
 
 - **tests/discovery.ps1** starts the downloader before the seed. Its tracker rejects port 0, checks that the advertised port stays consistent, and completes an incoming handshake during the started and stopped announces. It also verifies two tracker intervals and compares the downloaded file with the source.
+
+- **tests/folders.ps1** builds an independent folder torrent with an empty file and a piece that spans two files. It checks file order, hash failures, invalid paths, deterministic creation, seeding, download publication, resume, and protection against overwriting an existing folder.
 
 To see piece count change, create torrents for the same file with different --piece-size values and inspect both. Then modify one byte of a copy and run verify against the original torrent. The first failing piece index tells you which region changed.

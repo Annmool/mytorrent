@@ -1,7 +1,8 @@
 #pragma once
+#include "file_layout.hpp"
+
 #include <cstdint>
 #include <filesystem>
-#include <istream>
 #include <string>
 #include <string_view>
 
@@ -16,7 +17,9 @@ struct Metainfo {
     std::uint32_t piece_length{};
     std::string hashes;
     std::string info_hash;
+    std::vector<TorrentFile> files;
 
+    bool is_folder() const { return !files.empty(); }
     std::uint32_t count() const;
     std::uint32_t size(std::uint32_t index) const;
     std::uint64_t offset(std::uint32_t index) const;

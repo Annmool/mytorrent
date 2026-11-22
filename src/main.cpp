@@ -1,10 +1,10 @@
 #include "console_interrupt.hpp"
+#include "payload.hpp"
 #include "storage.hpp"
 #include "transfer.hpp"
 
 #include <windows.h>
 #include <algorithm>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -12,10 +12,10 @@
 namespace {
 constexpr auto usage = R"(MyTorrent 0.1.0
 Usage:
-  mytorrent create FILE --tracker URL --out FILE.torrent [--piece-size BYTES]
+  mytorrent create FILE_OR_FOLDER --tracker URL --out FILE.torrent [--piece-size BYTES]
   mytorrent inspect FILE.torrent
-  mytorrent verify FILE.torrent --file FILE
-  mytorrent seed FILE.torrent --file FILE [--port PORT] [--no-tracker]
+  mytorrent verify FILE.torrent (--file FILE | --folder DIRECTORY)
+  mytorrent seed FILE.torrent (--file FILE | --folder DIRECTORY) [--port PORT] [--no-tracker]
   mytorrent download FILE.torrent --out DIRECTORY [--peer IPV4:PORT] [--resume]
 )";
 
@@ -71,6 +71,13 @@ public:
         return value;
     }
 };
+
+std::filesystem::path source_path(const bt::Metainfo& meta, const Options& options) {
+    if (options.has(L"--file") && options.has(L"--folder")) {
+        throw std::runtime_error("Specify one source path");
+    }
+    return options.get(meta.is_folder() ? L"--folder" : L"--file");
+}
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -102,16 +109,22 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "Name: " << meta.name << "\nBytes: " << meta.length
                 << "\nPiece length: " << meta.piece_length << "\nPieces: " << meta.count()
                 << "\nInfo hash: " << bt::hex(meta.info_hash) << "\nTracker: " << meta.announce << '\n';
+            if (meta.is_folder()) {
+                std::cout << "Files: " << meta.files.size() << "\nOffset\tBytes\tPath\n";
+                for (const auto& file : meta.files) {
+                    std::cout << file.offset << '\t' << file.length << '\t' << bt::path_utf8(file.path) << '\n';
+                }
+            }
         } else if (command == L"verify") {
-            const Options options(argc, argv, {L"--file"});
-            std::ifstream file(std::filesystem::path(options.get(L"--file")), std::ios::binary);
-            bt::verify_file(meta, file);
-            std::cout << "File verified\n";
+            const Options options(argc, argv, {L"--file", L"--folder"});
+            bt::PayloadReader payload(source_path(meta, options), meta.length, meta.files);
+            bt::verify_payload(meta, payload);
+            std::cout << (meta.is_folder() ? "Folder verified\n" : "File verified\n");
         } else if (command == L"seed") {
-            const Options options(argc, argv, {L"--file", L"--port", L"--no-tracker"});
+            const Options options(argc, argv, {L"--file", L"--folder", L"--port", L"--no-tracker"});
             const bt::Network network;
             const bt::ConsoleInterrupt interrupt;
-            bt::seed(meta, options.get(L"--file"), static_cast<std::uint16_t>(options.number(L"--port", 6881, 65535)),
+            bt::seed(meta, source_path(meta, options), static_cast<std::uint16_t>(options.number(L"--port", 6881, 65535)),
                      !options.has(L"--no-tracker"), interrupt.requested());
         } else {
             const Options options(argc, argv, {L"--out", L"--peer", L"--resume"});

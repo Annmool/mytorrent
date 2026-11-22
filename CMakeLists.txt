@@ -4,7 +4,8 @@ if(NOT WIN32)
     message(FATAL_ERROR "MyTorrent 0.1 supports Windows.")
 endif()
 add_library(torrent_core
-    src/bencode.cpp src/metainfo.cpp src/storage.cpp src/net.cpp src/tracker.cpp
+    src/bencode.cpp src/metainfo.cpp src/file_layout.cpp src/storage.cpp src/net.cpp src/tracker.cpp
+    src/payload.cpp src/windows_file.cpp src/folder_output.cpp
     src/peer.cpp src/scheduler.cpp src/transfer.cpp src/discovery.cpp src/console_interrupt.cpp)
 target_include_directories(torrent_core PUBLIC src)
 target_compile_features(torrent_core PUBLIC cxx_std_20)
@@ -41,5 +42,7 @@ if(BUILD_TESTING)
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel.ps1" -Exe "$<TARGET_FILE:mytorrent>")
     add_test(NAME discovery COMMAND "${POWERSHELL_EXE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/discovery.ps1" -Exe "$<TARGET_FILE:mytorrent>")
-    set_tests_properties(loopback parallel discovery PROPERTIES TIMEOUT 75)
+    add_test(NAME folders COMMAND "${POWERSHELL_EXE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/folders.ps1" -Exe "$<TARGET_FILE:mytorrent>")
+    set_tests_properties(loopback parallel discovery folders PROPERTIES TIMEOUT 75)
 endif()

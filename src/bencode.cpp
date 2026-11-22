@@ -49,7 +49,7 @@ class Parser {
     }
 
     Value parse(unsigned depth) {
-        if (depth > 48 || ++nodes > 250000) fail();
+        if (depth > 48 || ++nodes > bencode_value_limit) fail();
         Value value;
         value.begin = pos;
         const char type = peek();

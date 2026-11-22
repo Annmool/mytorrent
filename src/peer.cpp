@@ -1,5 +1,5 @@
 #include "peer.hpp"
-#include "storage.hpp"
+#include "payload.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -82,7 +82,7 @@ void listen_for_download_peers(const Socket& listener, const Metainfo& meta, std
     }
 }
 
-void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view id, std::istream& file,
+void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view id, PayloadReader& payload,
             std::atomic_uint64_t& uploaded, const std::atomic_bool& stopped) {
     expect_handshake(peer, meta, id);
     send_handshake(peer, meta, id);
@@ -111,9 +111,7 @@ void upload_to_peer(const Socket& peer, const Metainfo& meta, std::string_view i
             if (!length || length > block_size || begin >= size || length > size - begin) {
                 throw std::runtime_error("Block request outside piece");
             }
-            file.clear();
-            file.seekg(static_cast<std::streamoff>(meta.offset(index) + begin));
-            send(peer, piece, word(index) + word(begin) + read_exact(file, length));
+            send(peer, piece, word(index) + word(begin) + payload.read(meta.offset(index) + begin, length));
             uploaded += length;
         }
     }

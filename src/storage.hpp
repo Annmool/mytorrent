@@ -1,19 +1,20 @@
 #pragma once
 #include "metainfo.hpp"
+#include "windows_file.hpp"
 
 namespace bt {
-std::string read_exact(std::istream& file, std::size_t size);
-void verify_file(const Metainfo& meta, std::istream& file);
 void save_new(const std::filesystem::path& path, std::string_view bytes);
 
 class OutputFile {
     std::filesystem::path final_path;
-    std::filesystem::path temp_path;
-    void* handle{};
+    std::span<const TorrentFile> files;
+    FileHandle parent;
+    FileHandle handle;
     bool published{};
     bool resumable{};
 public:
-    explicit OutputFile(std::filesystem::path path, std::string_view resume_hash = {});
+    explicit OutputFile(std::filesystem::path path, std::string_view resume_hash = {},
+                        std::span<const TorrentFile> entries = {});
     ~OutputFile();
     OutputFile(const OutputFile&) = delete;
     OutputFile& operator=(const OutputFile&) = delete;

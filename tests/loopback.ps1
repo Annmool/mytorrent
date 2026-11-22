@@ -87,6 +87,10 @@ try {
     [IO.File]::WriteAllBytes($bad, $payload)
     Run @('verify', $torrent, '--file', $bad) 1
     Run @('seed', $torrent, '--file', $bad, '--no-tracker') 1
+    $oversized = Join-Path $root 'oversized.bin'
+    $payload[100] = $payload[100] -bxor 255
+    [IO.File]::WriteAllBytes($oversized, [byte[]]($payload + 0))
+    Run @('verify', $torrent, '--file', $oversized) 1
 
     $log = Join-Path $root 'seed.log'
     $errors = Join-Path $root 'seed-error.log'

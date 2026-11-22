@@ -1,10 +1,8 @@
-#include "storage.hpp"
 #include "bencode.hpp"
 #include "metainfo.hpp"
 #include "tracker.hpp"
 
 #include <iostream>
-#include <sstream>
 #include <stdexcept>
 
 namespace {
@@ -43,10 +41,6 @@ int main() {
         check(meta.info_hash == sha1(info), "Info hash excludes outer dictionary");
         check(meta.count() == 1 && meta.size(0) == 3 && meta.offset(0) == 0, "Final piece length");
         rejects([&] { meta.size(1); }, "Accepted out of range piece index");
-        std::istringstream correct("abc"), corrupt("abd"), oversized("abcd");
-        verify_file(meta, correct);
-        rejects([&] { verify_file(meta, corrupt); }, "Corrupt file verified");
-        rejects([&] { verify_file(meta, oversized); }, "Oversized file verified");
 
         check(escape_query("\0\xff+"s) == "%00%FF%2B", "Binary tracker query escaping");
         const auto reply = parse_tracker_reply("d8:intervali60e5:peers6:\x7f\0\0\x01\x1a\xe1" "e"s);

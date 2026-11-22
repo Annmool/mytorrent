@@ -1,11 +1,11 @@
 #include "discovery.hpp"
+#include "payload.hpp"
 #include "storage.hpp"
 #include "transfer.hpp"
 #include "peer.hpp"
 #include "scheduler.hpp"
 
 #include <condition_variable>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -26,8 +26,8 @@ void report_announce(const Metainfo& meta, std::string_view id, const Announce& 
 
 void seed(const Metainfo& meta, const std::filesystem::path& source, std::uint16_t port,
           bool use_tracker, const std::atomic_bool& stopped) {
-    std::ifstream file(source, std::ios::binary);
-    verify_file(meta, file);
+    PayloadReader payload(source, meta.length, meta.files);
+    verify_payload(meta, payload);
     const auto listener = Socket::listen_on(port);
     const auto id = peer_id();
     std::atomic_uint64_t uploaded{};
@@ -56,7 +56,7 @@ void seed(const Metainfo& meta, const std::filesystem::path& source, std::uint16
         if (!listener.has_peer()) continue;
         try {
             const auto peer = listener.accept_peer();
-            upload_to_peer(peer, meta, id, file, uploaded, stopped);
+            upload_to_peer(peer, meta, id, payload, uploaded, stopped);
         } catch (const std::exception& error) {
             std::cerr << "Peer: " << error.what() << '\n';
         }
@@ -66,7 +66,7 @@ void seed(const Metainfo& meta, const std::filesystem::path& source, std::uint16
 void download(const Metainfo& meta, const std::filesystem::path& directory, const Endpoint* direct, bool resume) {
     const auto destination = directory / safe_name(meta.name);
     std::filesystem::create_directories(directory);
-    OutputFile output(destination, resume ? std::string_view(meta.info_hash) : std::string_view{});
+    OutputFile output(destination, resume ? std::string_view(meta.info_hash) : std::string_view{}, meta.files);
     const auto index = resume ? output.recheck(meta) : 0;
     const auto verified_bytes = index == meta.count() ? meta.length : meta.offset(index);
     if (verified_bytes != 0) {

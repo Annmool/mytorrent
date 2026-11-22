@@ -4,5 +4,6 @@
 /CMakeUserPresets.json
 *.torrent
 *.part
+.mytorrent-*.stage/
 *.log
 AGENTS.md

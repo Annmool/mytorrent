@@ -1,6 +1,6 @@
 # MyTorrent
 
-MyTorrent 0.1.0 is a Windows C++20 command-line client for creating, inspecting, verifying, seeding, and downloading single-file BitTorrent v1 torrents. It supports direct IPv4 TCP peers and HTTP or HTTPS tracker discovery.
+MyTorrent is a Windows C++20 command-line client for creating, inspecting, verifying, seeding, and downloading BitTorrent v1 torrents for files and folders. It supports direct IPv4 TCP peers and HTTP or HTTPS tracker discovery.
 
 Start with [the code walkthrough](docs/WALKTHROUGH.md) to follow a torrent from disk to the wire and back.
 
@@ -66,6 +66,26 @@ fc /b ".local\example.txt" ".local\received\example.txt"
 
 Expect FC to report no differences. Stop the seeder with Ctrl+C when you are done. Use fresh torrent and destination paths to repeat the demo. This direct transfer skips tracker discovery, so the example tracker URL only needs to be stored in the torrent.
 
+## Transfer a folder
+
+Pass a directory to `create` and keep the generated torrent outside that directory. Use `--folder` with the local payload root when verifying or seeding. For example, put some files and subfolders in `.local\album` and run the following in the first Command Prompt.
+
+~~~bat
+"%MYTORRENT%" create ".local\album" --tracker http://127.0.0.1:8080/announce --out ".local\album.torrent"
+"%MYTORRENT%" inspect ".local\album.torrent"
+"%MYTORRENT%" verify ".local\album.torrent" --folder ".local\album"
+"%MYTORRENT%" seed ".local\album.torrent" --folder ".local\album" --port 6881 --no-tracker
+~~~
+
+In the second window, download into the parent directory and verify the resulting folder.
+
+~~~bat
+"%MYTORRENT%" download ".local\album.torrent" --out ".local\received" --peer 127.0.0.1:6881
+"%MYTORRENT%" verify ".local\album.torrent" --folder ".local\received\album"
+~~~
+
+`inspect` lists each file's offset and length in bytes. A piece can span multiple files. Empty files are preserved, and BitTorrent v1 describes directories through file paths. Folder publication temporarily needs space for both the verified partial data and the unpacked files.
+
 ## Download through a tracker
 
 Replace the sample tracker URL with an existing tracker reachable by the seeder and downloader. On the seeder, create a new torrent and start it with tracker announcements enabled:
@@ -93,14 +113,14 @@ Add the resume flag on the initial run. After an interruption, rerun the same co
 
 For a tracker-based transfer, add the same flag to the tracker download command.
 
-MyTorrent keeps a .mytorrent-<info-hash>.part file in the output directory. It verifies the saved pieces again at startup, discards any incomplete or invalid tail, and continues from the first missing piece. The final file appears after all pieces pass verification. Remove the partial file to discard progress when no download is running.
+MyTorrent keeps a .mytorrent-<info-hash>.part file in the output directory. It verifies the saved pieces again at startup, discards any incomplete or invalid tail, and continues from the first missing piece. The final file or folder appears after all pieces pass verification. Remove the partial file to discard progress when no download is running.
 
 ## Release scope
 
-- Single-file v1, nonempty payloads, IPv4 TCP peers. Seeded files must stay unchanged while serving.
+- Single-file and multi-file v1, nonempty payloads, IPv4 TCP peers. Seeded files must stay unchanged while serving.
 - The seeder serves one connection at a time and announces periodically. The downloader requests pieces from up to four peers concurrently from the first nonempty tracker response. It answers incoming handshakes in tracker mode and keeps those peers choked. An explicit peer address selects one outbound connection. Use the separate seed command to serve a verified file.
 - Each connection pipelines up to eight block requests for its assigned piece. The scheduler buffers up to eight pieces near the write position, and an unfinished piece can be reassigned when a peer fails. Use the resume flag to preserve progress across runs.
-- Multi-file torrents, private tracker flags, UDP trackers, IPv6 peers, magnet links, DHT, and v2 or hybrid torrents are future work.
+- Private tracker flags, UDP trackers, IPv6 peers, magnet links, DHT, and v2 or hybrid torrents are future work.
 - Verified on Windows using GCC and Ninja. The test tracker and peer are fixtures. Compatibility with public trackers and third-party desktop clients has yet to be tested.
 
 ## Protocol references
